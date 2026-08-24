@@ -1,0 +1,86 @@
+# =============================================================
+# KazumiTV 电视版（安卓 5.1 / API 22 适配）自动构建
+#
+# 用法（GitHub 网页版，无需电脑）：
+#   1. 上传源码包  kazumi-tv-*.zip 到仓库根目录
+#      （zip 内含完整 Flutter 工程，本脚本会自动解压定位）
+#   2. 上传本文件到  .github/workflows/build.yml （Add file → Upload files）
+#   3. 打开 Actions 页 → 自动触发（push）或手动点 Run workflow
+#   4. 构建完成后在本次运行底部下载  kazumi-tv-apk 工件（APK）
+# =============================================================
+name: Build KazumiTV APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---- 自动解压: 仓库根目录放 kazumi-tv-*.zip 即可，Actions 自动定位工程 ----
+      - name: Extract project zip
+        run: |
+          set -e
+          for z in kazumi*.zip; do
+            if [ -f "$z" ]; then echo "解压: $z"; unzip -q -o "$z"; fi
+          done
+          # 定位 Flutter 工程根（含 pubspec.yaml 的目录）
+          PUBSPEC=$(find . -maxdepth 3 -name pubspec.yaml | head -1)
+          if [ -z "$PUBSPEC" ]; then
+            echo "未找到 Flutter 工程：请确认仓库根目录已上传 kazumi-tv-*.zip 源码包"
+            exit 1
+          fi
+          PROJ=$(dirname "$PUBSPEC")
+          if [ "$PROJ" = "." ]; then PROJ=""; fi
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE/$PROJ" >> $GITHUB_ENV
+          echo "工程目录: $PROJECT_DIR"
+          ls -la
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: "Set up Flutter (版本从 pubspec.yaml 读取: 3.47.1 stable)"
+        uses: subosito/flutter-action@v2.16.0
+        with:
+          channel: stable
+          flutter-version-file: pubspec.yaml
+          cache: true
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+        working-directory: ${{ env.PROJECT_DIR }}
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/build.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # ---- 关键：fat APK 同时包含 arm64-v8a + armeabi-v7a ----
+      # 海信 VIDAA V1 (MStar MSD6A828) 确认是 arm64，但镜像可能跑在 32 位，
+      # 双架构打包保证两种都能装、都能跑。
+      - name: Build release APK (arm + arm64)
+        run: flutter build apk --release --target-platform android-arm,android-arm64
+        working-directory: ${{ env.PROJECT_DIR }}
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kazumi-tv-apk
+          path: ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
+          overwrite: true
+          if-no-files-found: error
